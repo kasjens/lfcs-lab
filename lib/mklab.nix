@@ -152,6 +152,18 @@ let
         <rng model='virtio'>
           <backend model='random'>/dev/urandom</backend>
         </rng>
+        <!-- A VGA adapter with no <graphics> to display it: the guests stay
+             headless and serial-only, but the hardware exists. Rocky's GRUB
+             hangs forever after "Probing EDD (edd=off to disable)... ok" on a
+             machine with no video device at all, which looks exactly like a
+             dead VM — no console output, no DHCP, 100% CPU. Ubuntu's GRUB is
+             built with a serial terminal and does not care. Two lines here
+             are cheaper than that afternoon. It also makes `virsh screenshot`
+             work, which is the only way to see a bootloader that never
+             reaches the serial console. -->
+        <video>
+          <model type='vga' vram='16384' heads='1' primary='yes'/>
+        </video>
       </devices>
     </domain>
   '';
