@@ -85,6 +85,22 @@ fetch_images() {
   done
 }
 
+# qemu holds a write lock on a running guest's disk, so recreating one under a
+# live domain fails with 'Failed to get "write" lock' — and would be a bad idea
+# if it succeeded. Stop whatever is up before the disks are rebuilt. Only nodes
+# that are actually running, so a genuine first install waits on nothing.
+stop_running() {
+  local n st running=()
+  for n in "${NODES[@]}"; do
+    st="$(state_of "$n")"
+    if [ -n "$st" ] && [ "$st" != "shut off" ]; then running+=("$n"); fi
+  done
+  if [ "${#running[@]}" -gt 0 ]; then
+    log "stopping ${running[*]} first — install rebuilds their disks"
+    cmd_down "${running[@]}"
+  fi
+}
+
 make_disks() {
   local n="$1" distro base root i
   distro="${NODE_DISTRO[$n]}"
@@ -184,6 +200,13 @@ cmd_install() {
   preflight
   ensure_key
   sudo mkdir -p "$STATE"/{base,disks,seed,snapshots}
+  stop_running
+  # install is the from-scratch command: every guest disk is recreated, so
+  # anything living on one is gone. Say so rather than let it be a surprise.
+  if [ -n "$(sudo sh -c 'ls -A "$1"/disks 2>/dev/null' _ "$STATE")" ]; then
+    warn "recreating all guest disks — everything inside the current guests is discarded"
+    warn "(snapshots under $STATE/snapshots are kept; 'lfcs-lab load <name>' restores one)"
+  fi
   fetch_images
   local n
   for n in "${NODES[@]}"; do
