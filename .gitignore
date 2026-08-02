@@ -1,0 +1,46 @@
+# The repo is source only: lab.nix, the Nix that derives from it, and the shell.
+# Everything a run produces lives either in the Nix store or under stateDir
+# (/var/lib/libvirt/images/lfcs-lab). Nothing generated belongs in here.
+
+# Nix build outputs. `nix build .#manifest` drops a `result` symlink into the
+# repo root — committing it would pin a store path that exists on one machine.
+/result
+/result-*
+
+# nix develop caches, if you ever wire up direnv. .envrc itself is worth
+# committing; the directory it builds is not.
+.direnv/
+.envrc.local
+
+# Guest disks, base images and cloud-init seeds. These are gigabytes and are
+# never supposed to be here — stateDir keeps them under /var/lib/libvirt so
+# qemu can traverse to them. This is a backstop against a stray download in
+# the repo root becoming a commit nobody can undo cheaply.
+*.qcow2
+*.img
+*.iso
+*.raw
+
+# The lab-only ssh key is generated into ~/.config/lfcs-lab, not the repo.
+# Belt and braces, because a committed private key is forever.
+id_lab
+id_lab*
+*.pem
+id_ed25519*
+id_rsa*
+
+# Editors and desktops
+*~
+*.sw[op]
+.vscode/
+.idea/
+.DS_Store
+
+# Scratch
+*.log
+*.tmp
+
+# flake.lock is the whole point of the flake — it is what makes the toolchain
+# reproducible rather than merely declared. Never ignore it, not even if a
+# broad *.lock rule shows up above one day.
+!flake.lock

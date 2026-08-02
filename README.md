@@ -45,7 +45,17 @@ cruel joke.
 
 ## Prerequisites
 
-Nix with flakes, plus libvirt running on the host:
+`scripts/bootstrap.sh` resolves all of them and is safe to re-run. It checks
+hardware virtualisation, installs the host libvirt/qemu packages, starts the
+daemon, fixes group membership, installs Nix if you want it, and writes
+`flake.lock`. Nothing mutates without a prompt.
+
+```bash
+./scripts/bootstrap.sh --check    # report only
+./scripts/bootstrap.sh            # fix, asking before each step
+```
+
+By hand it is Nix with flakes, plus libvirt running on the host:
 
 ```bash
 sudo systemctl enable --now libvirtd
