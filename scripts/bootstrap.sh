@@ -208,34 +208,71 @@ check_daemon() {
   fi
 }
 
+# `id -nG "$USER"` asks the group database; `id -nG` reports what this process
+# actually runs with. They disagree for exactly as long as the session is stale.
+in_group_db()      { id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$1"; }
+in_group_session() { id -nG          2>/dev/null | tr ' ' '\n' | grep -qx "$1"; }
+
+# A group is a means, not the end — test the access itself and only explain
+# group membership when it is genuinely what stands in the way. udev commonly
+# grants the seat user /dev/kvm through a POSIX ACL (crw-rw----+), in which
+# case demanding the kvm group is a false alarm the user can never clear.
+libvirt_reachable() {
+  command -v virsh >/dev/null 2>&1 || return 2   # 2 = cannot tell yet
+  virsh -c qemu:///system version >/dev/null 2>&1
+}
+
+# Access was refused. usermod writes the group database, but a process carries
+# the credentials it was handed at login, so a shell older than the usermod is
+# still refused and running usermod again fixes nothing. Only one of these has
+# a fix this script can apply; name whichever one it actually is.
+explain_refusal() {
+  local g="$1"
+  if ! in_group_db "$g"; then
+    miss "not in the $g group"
+    if confirm "add $USER to $g?"; then
+      need_sudo
+      $SUDO usermod -aG "$g" "$USER"
+      PROBLEMS=$((PROBLEMS - 1))
+      RELOGIN=1
+      ok "added to $g"
+      # Say it here, not only in the summary: the nix steps below can print
+      # minutes of build output and scroll this off the screen entirely.
+      warn "NOT active in this shell yet — access stays refused until you do:"
+      warn "    newgrp $g      (or log out and back in)"
+    fi
+  elif ! in_group_session "$g"; then
+    miss "you are in $g, but this shell started before that and does not have it"
+    warn "fix the session, not the config:"
+    warn "    newgrp $g      (or log out and back in)"
+    RELOGIN=1
+  else
+    miss "$g is in effect but access is still refused — this is not a group problem"
+    warn "look at the daemon: systemctl status libvirtd; journalctl -u libvirtd -n 50"
+  fi
+}
+
 check_groups() {
   log "permissions"
 
-  if [ -e /dev/kvm ]; then
-    if [ -w /dev/kvm ]; then ok "/dev/kvm writable"; else warn "/dev/kvm exists but is not writable by you"; fi
-  else
+  if [ ! -e /dev/kvm ]; then
     miss "/dev/kvm absent — the kvm module is not loaded, or virtualisation is off in firmware"
+  elif [ -w /dev/kvm ]; then
+    ok "/dev/kvm writable"
+  else
+    explain_refusal kvm
   fi
 
-  local g want=() have; have="$(id -nG)"
-  for g in libvirt kvm; do
-    if getent group "$g" >/dev/null 2>&1 && ! printf ' %s ' "$have" | grep -q " $g "; then
-      want+=("$g")
-    fi
-  done
-
-  if [ "${#want[@]}" -eq 0 ]; then
-    ok "group membership: libvirt, kvm"
-    return 0
-  fi
-
-  miss "not in group(s): ${want[*]}"
-  if confirm "add $USER to ${want[*]}?"; then
-    need_sudo
-    for g in "${want[@]}"; do $SUDO usermod -aG "$g" "$USER"; done
-    PROBLEMS=$((PROBLEMS - 1))
-    RELOGIN=1
-    ok "added to ${want[*]} — takes effect on your next login"
+  # Ask the socket rather than inferring from group membership: reachable is
+  # the only thing `lfcs-lab` actually needs, and it is what its preflight tests.
+  local rc=0
+  libvirt_reachable || rc=$?
+  if [ "$rc" = 0 ]; then
+    ok "qemu:///system reachable"
+  elif [ "$rc" = 2 ] && in_group_db libvirt && in_group_session libvirt; then
+    ok "in the libvirt group (virsh not installed yet, so the socket is untested)"
+  else
+    explain_refusal libvirt
   fi
 }
 
@@ -354,6 +391,18 @@ check_nix || have_nix=1
 check_lock "$have_nix"
 
 echo >&2
+
+# Print this first and unconditionally. It is the single most common reason a
+# correctly configured host still fails at `lfcs-lab install`, and burying it
+# behind the problem count is how it gets missed.
+if [ "$RELOGIN" = 1 ]; then
+  warn "libvirt group access is not active in this shell:"
+  warn "    newgrp libvirt          this shell only"
+  warn "    log out and back in     everything, including new terminals"
+  warn 'nix develop inherits this shell, so leave it first if you are in it.'
+  echo >&2
+fi
+
 if [ "$CHECK_ONLY" = 1 ]; then
   if [ "$PROBLEMS" -gt 0 ]; then
     warn "$PROBLEMS unresolved item(s). Re-run without --check to fix them."
@@ -366,11 +415,6 @@ fi
 if [ "$PROBLEMS" -gt 0 ]; then
   warn "$PROBLEMS item(s) still unresolved — see the -- lines above"
   exit 1
-fi
-
-if [ "$RELOGIN" = 1 ]; then
-  warn "group changes need a new login. Either log out and back in, or:"
-  warn "  newgrp libvirt"
 fi
 
 cat >&2 <<EOF
