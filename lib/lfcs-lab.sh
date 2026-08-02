@@ -112,10 +112,26 @@ make_seed() {
   rm -rf "$tmp"
 }
 
+# The UUID in the manifest is derived from the object's name, so redefining is
+# an update. Anything defined before that — by an older version of this repo,
+# where libvirt assigned a random UUID — collides by name and has to go first.
+uuid_in() { sed -n 's|.*<uuid>\(.*\)</uuid>.*|\1|p' "$1" | head -n1; }
+
 define_nets() {
-  local f name
+  local f name want have
   for f in "$MANIFEST"/networks/*.xml; do
     name="$(basename "$f" .xml)"
+    want="$(uuid_in "$f")"
+    have="$(virsh net-uuid "$name" 2>/dev/null | tr -d '\r' | head -n1)"
+
+    if [ -n "$have" ] && [ "$have" != "$want" ]; then
+      warn "$name predates stable UUIDs; recreating it once"
+      # Only disruptive to guests attached right now, and install defines
+      # networks before it starts anything.
+      virsh net-destroy "$name" >/dev/null 2>&1 || true
+      virsh net-undefine "$name" >/dev/null
+    fi
+
     virsh net-define "$f" >/dev/null
     virsh net-autostart "$name" >/dev/null
     virsh net-start "$name" >/dev/null 2>&1 || true
@@ -124,10 +140,25 @@ define_nets() {
 }
 
 define_domains() {
-  local n
+  local n d want have
   for n in "${NODES[@]}"; do
+    d="$(dom "$n")"
+    want="$(uuid_in "$MANIFEST/domains/$n.xml")"
+    have="$(virsh domuuid "$d" 2>/dev/null | tr -d '\r' | head -n1)"
+
+    if [ -n "$have" ] && [ "$have" != "$want" ]; then
+      # Undefining a running domain leaves it transient, which would quietly
+      # lose the definition on shutdown. Say so rather than do that.
+      if [ "$(state_of "$n")" = "running" ]; then
+        warn "$d predates stable UUIDs and is running — shut it down, then apply again"
+        continue
+      fi
+      warn "$d predates stable UUIDs; recreating it once"
+      virsh undefine "$d" >/dev/null
+    fi
+
     virsh define "$MANIFEST/domains/$n.xml" >/dev/null
-    log "domain $(dom "$n") defined"
+    log "domain $d defined"
   done
 }
 

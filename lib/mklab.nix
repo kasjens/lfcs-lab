@@ -17,6 +17,19 @@ let
 
   letters = [ "b" "c" "d" "e" "f" "g" ];
 
+  # Deterministic UUIDs, derived from the object's name. Without a <uuid> in
+  # the XML libvirt invents a random one at define time, and every later
+  # define then fails with "already exists with uuid ..." — which would make
+  # `apply` a command you can only ever run once. Same name, same UUID, so
+  # redefining is an update rather than a collision.
+  mkUuid = s:
+    let
+      h = builtins.hashString "sha256" "${t.name}/${s}";
+      f = off: len: lib.substring off len h;
+    in
+    # version nibble 4, variant nibble a: shaped like a v4 UUID, but stable.
+    "${f 0 8}-${f 8 4}-4${f 13 3}-a${f 17 3}-${f 20 12}";
+
   ##########################################################################
   # Networks
   ##########################################################################
@@ -24,6 +37,7 @@ let
   mgmtNet = pkgs.writeText "${netName "mgmt"}.xml" ''
     <network>
       <name>${netName "mgmt"}</name>
+      <uuid>${mkUuid (netName "mgmt")}</uuid>
       <forward mode='nat'/>
       <bridge name='vbr-${t.name}m' stp='on' delay='0'/>
       <ip address='${mgmt.subnet}.1' netmask='255.255.255.0'>
@@ -43,6 +57,7 @@ let
   lanNet = pkgs.writeText "${netName "lan"}.xml" ''
     <network>
       <name>${netName "lan"}</name>
+      <uuid>${mkUuid (netName "lan")}</uuid>
       <bridge name='vbr-${t.name}l' stp='on' delay='0'/>
     </network>
   '';
@@ -92,6 +107,7 @@ let
   domainXml = name: node: pkgs.writeText "${t.name}-${name}.xml" ''
     <domain type='kvm'>
       <name>${t.name}-${name}</name>
+      <uuid>${mkUuid "${t.name}-${name}"}</uuid>
       <title>LFCS lab: ${name} (${node.distro})</title>
       <memory unit='MiB'>${toString node.memory}</memory>
       <currentMemory unit='MiB'>${toString node.memory}</currentMemory>
