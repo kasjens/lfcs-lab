@@ -41,14 +41,23 @@ state_of() {
   virsh domstate "$(dom "$1")" 2>/dev/null | head -n1 | tr -d '\r' || true
 }
 
+SSH_OPTS=(
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o LogLevel=ERROR
+  -o ConnectTimeout=5
+)
+
 sshx() {
   local n="$1"; shift
-  ssh -i "$SSH_KEY" \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR \
-      -o ConnectTimeout=5 \
-      "$LABUSER@${NODE_IP[$n]}" "$@"
+  ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "$LABUSER@${NODE_IP[$n]}" "$@"
+}
+
+# The same call, but bounded. `timeout` runs a command, not a shell function,
+# so the ssh invocation is spelled out again rather than wrapping sshx.
+sshx_t() {
+  local secs="$1" n="$2"; shift 2
+  timeout "$secs" ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "$LABUSER@${NODE_IP[$n]}" "$@"
 }
 
 preflight() {
@@ -60,6 +69,21 @@ preflight() {
   if [ ! -w /dev/kvm ]; then
     warn "/dev/kvm is not writable by you — guests will run under slow software emulation"
   fi
+}
+
+# install runs for twenty minutes and then needs root again at the very end,
+# to copy the 'clean' snapshot — long after sudo's timestamp has expired. That
+# prompts for a password into a terminal nobody is watching, times out, and
+# kills the run one step from the finish line with every other step done.
+# Refresh the timestamp for as long as the command lasts.
+keep_sudo_alive() {
+  sudo -v || die "install needs sudo: the guest disks live under $STATE"
+  while true; do
+    sudo -n true 2>/dev/null || break
+    sleep 50
+  done &
+  SUDO_PID=$!
+  trap 'kill "$SUDO_PID" 2>/dev/null || true' EXIT
 }
 
 ensure_key() {
@@ -189,7 +213,13 @@ wait_ready() {
       fi
       sleep 5
     done
-    sshx "$n" "cloud-init status --wait" >/dev/null 2>&1 || true
+    # Let cloud-init finish its package installs before calling the node ready.
+    # This needs root on EL9: an unprivileged user cannot read
+    # /run/cloud-init/cloud.cfg, and `--wait` spins on that error forever
+    # rather than exiting, which hung install for as long as you let it — with
+    # ssh answering the whole time. The || true only ever caught a bad exit
+    # code, never a command that does not return, so bound it too.
+    sshx_t 600 "$n" "sudo cloud-init status --wait" >/dev/null 2>&1 || true
     log "$n ready"
   done
 }
@@ -198,6 +228,7 @@ wait_ready() {
 
 cmd_install() {
   preflight
+  keep_sudo_alive
   ensure_key
   sudo mkdir -p "$STATE"/{base,disks,seed,snapshots}
   stop_running
